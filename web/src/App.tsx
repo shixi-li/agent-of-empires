@@ -108,6 +108,8 @@ import { PaneDndController } from "./components/PaneDndController";
 import { visibleToFullIndex, type DropTarget } from "./components/paneDnd";
 import { BackgroundAgentsPanel } from "./components/acp/BackgroundAgentsPanel";
 import { DiffPane } from "./components/DiffPane";
+import { FilesPane } from "./components/FilesPane";
+import { FileContentViewer } from "./components/diff/FileContentViewer";
 import { PairedShellPane } from "./components/PairedTerminal";
 import { BUILTIN_PANES, isTerminalTabId, terminalIndexOf, terminalTabId, type DockLocation } from "./lib/panes";
 import { MobileRightPanelPicker } from "./components/MobileRightPanelPicker";
@@ -443,8 +445,14 @@ function AppContent({
      *  file may have no diff against the base (full-file fallback, #1810), so
      *  it must not be auto-cleared for being absent from the diff list. */
     cited?: boolean;
+    /** An absolute path OUTSIDE the session's repo roots that the agent
+     *  touched this session (a cited `/tmp/plan.md`, `~/.claude/x.md`). Read
+     *  via the provenance-confined `/file` endpoint and rendered by
+     *  FileContentViewer instead of the git-diff viewer. See #3088. */
+    external?: boolean;
   } | null>(null);
   const selectedFilePath = selectedFile?.path ?? null;
+  const selectedFileExternal = selectedFile?.external ?? false;
   const selectedRepoName = selectedFile?.repoName;
   const selectedFileLine = selectedFile?.line;
   // Dock panes render as tabbed groups (#2437): each dock holds an ordered set
@@ -577,7 +585,7 @@ function AppContent({
       const defaultDock: DockLocation =
         pluginPaneById.get(kind)?.defaultDock ?? BUILTIN_PANES.find((p) => p.id === kind)?.defaultDock ?? "right";
       if (isPluginPaneId(kind)) togglePlugin(kind, defaultDock);
-      else toggleKind(kind as "diff" | "terminal" | "agents", defaultDock);
+      else toggleKind(kind as "diff" | "terminal" | "agents" | "files", defaultDock);
     },
     [toggleKind, togglePlugin, pluginPaneById],
   );
@@ -1202,6 +1210,15 @@ function AppContent({
       if (!activeSession) return;
       const resolved = resolveToRepoRelative(ref.path, activeSession);
       if (!resolved) {
+        // Outside the session's repo roots. The agent may still have touched
+        // it this session (e.g. a plan written to /tmp or ~/.claude); the
+        // provenance-confined /file endpoint is the gate, so open it in the
+        // FileContentViewer and let the server allow or refuse. A relative
+        // path we couldn't resolve has no absolute target to try. See #3088.
+        if (ref.path.startsWith("/")) {
+          setSelectedFile({ path: ref.path, line: ref.line, cited: true, external: true });
+          return;
+        }
         toastBus.handler?.error(`Could not open ${ref.path}: not inside this session's repo`);
         return;
       }
@@ -1623,6 +1640,9 @@ function AppContent({
       if (id === "agents") {
         return <BackgroundAgentsPanel sessionId={activeSessionId} />;
       }
+      if (id === "files") {
+        return <FilesPane sessionId={activeSessionId} />;
+      }
       if (id === "diff") {
         return (
           <DiffPane
@@ -1694,18 +1714,26 @@ function AppContent({
                   )}
                 </div>
 
-                {selectedFilePath && activeSessionId && (
-                  <DiffFileViewer
-                    sessionId={activeSessionId}
-                    filePath={selectedFilePath}
-                    repoName={selectedRepoName}
-                    targetLine={selectedFileLine}
-                    revision={revision}
-                    onClose={handleCloseFile}
-                    commentsEnabled={commentsEnabled}
-                    commentsStore={diffComments}
-                  />
-                )}
+                {selectedFilePath &&
+                  activeSessionId &&
+                  (selectedFileExternal ? (
+                    <FileContentViewer
+                      sessionId={activeSessionId}
+                      filePath={selectedFilePath}
+                      onBack={handleCloseFile}
+                    />
+                  ) : (
+                    <DiffFileViewer
+                      sessionId={activeSessionId}
+                      filePath={selectedFilePath}
+                      repoName={selectedRepoName}
+                      targetLine={selectedFileLine}
+                      revision={revision}
+                      onClose={handleCloseFile}
+                      commentsEnabled={commentsEnabled}
+                      commentsStore={diffComments}
+                    />
+                  ))}
               </div>
             }
             right={
